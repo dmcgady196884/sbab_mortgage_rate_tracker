@@ -1,0 +1,156 @@
+name: SBAB Daily Rate Monitor
+
+on:
+  # The daily schedule is switched off in this public copy, so it doesn't duplicate the
+  # alerts from the private deployment. To run it daily, restore:
+  #   schedule:
+  #     # Run at 07:30 UTC (09:30 Swedish summer time / 08:30 winter time)
+  #     - cron: '30 7 * * *'
+
+  workflow_dispatch:
+    # Allow manual trigger for testing
+    inputs:
+      send_email:
+        description: 'Send email notification'
+        required: false
+        default: 'true'
+        type: boolean
+      is_test:
+        description: 'Test mode (prepends TEST to email subjects)'
+        required: false
+        default: 'false'
+        type: boolean
+      force_shallow:
+        description: 'Force shallow run only (diagnostic email if deep would trigger)'
+        required: false
+        default: 'false'
+        type: boolean
+      data_dir:
+        description: 'Override data directory (e.g., data/test_fixtures/list_rate_change/)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  monitor-rates:
+    # Pinned: `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19; move on purpose, not by surprise
+    runs-on: ubuntu-24.04
+    # Deep runs take ~40-55 min -- a hung run should not burn the default 6 hours.
+    # 179 (prime) for headroom.
+    timeout-minutes: 179
+
+    permissions:
+      contents: write       # Needed to commit/push
+      pull-requests: write  # Needed to create PRs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # Get full history for comparison
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pipeline
+        id: pipeline
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          TO_EMAIL: ${{ secrets.TO_EMAIL }}
+          IS_TEST: ${{ github.event.inputs.is_test }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Workflow inputs go through env, never straight into the script text
+          # (an expression inside run: is pasted into the script before the shell parses it).
+          INPUT_SEND_EMAIL: ${{ github.event.inputs.send_email }}
+          INPUT_FORCE_SHALLOW: ${{ github.event.inputs.force_shallow }}
+          INPUT_DATA_DIR: ${{ github.event.inputs.data_dir }}
+        run: |
+          # Skip email if send_email is false
+          if [ "$INPUT_SEND_EMAIL" = "false" ]; then
+            echo "Email disabled via workflow input"
+            unset SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS TO_EMAIL
+          fi
+
+          # Build command with optional flags
+          ARGS=(python src/aleph_null.py)
+          if [ "$INPUT_FORCE_SHALLOW" = "true" ]; then
+            ARGS+=(--force-shallow)
+          fi
+          if [ -n "$INPUT_DATA_DIR" ]; then
+            ARGS+=(--data-dir "$INPUT_DATA_DIR")
+          fi
+
+          echo "Running: ${ARGS[*]}"
+          "${ARGS[@]}"
+
+      - name: Determine artifact retention
+        id: retention
+        if: always()
+        run: |
+          if [ -f "data/pipeline_state.json" ]; then
+            EMAIL_TYPE=$(python -c "import json; print(json.load(open('data/pipeline_state.json')).get('email_type', 'no_change'))")
+            if [ "$EMAIL_TYPE" = "no_change" ]; then
+              echo "days=7" >> $GITHUB_OUTPUT
+            else
+              echo "days=365" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "days=7" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbab-data-${{ github.run_number }}
+          path: |
+            data/
+            logs/
+          retention-days: ${{ steps.retention.outputs.days }}
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## SBAB Rate Monitor - $(date +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Read pipeline state if available
+          if [ -f "data/pipeline_state.json" ]; then
+            EMAIL_TYPE=$(python -c "import json; print(json.load(open('data/pipeline_state.json')).get('email_type', 'unknown'))")
+
+            if [ "$EMAIL_TYPE" = "no_change" ]; then
+              echo "✅ **No changes detected**" >> $GITHUB_STEP_SUMMARY
+            elif [ "$EMAIL_TYPE" = "list_rate_change" ]; then
+              echo "📊 **List rate change detected**" >> $GITHUB_STEP_SUMMARY
+            elif [ "$EMAIL_TYPE" = "deep_run_started" ]; then
+              echo "🔍 **Deep run completed - PR created**" >> $GITHUB_STEP_SUMMARY
+            elif [ "$EMAIL_TYPE" = "pipeline_failed" ]; then
+              EMAIL_SEND_FAILED=$(python -c "import json; print(json.load(open('data/pipeline_state.json')).get('email_send_failed', ''))")
+              if [ -n "$EMAIL_SEND_FAILED" ]; then
+                echo "🔥 **Pipeline failed, AND the failure-alert email itself failed to send** ($EMAIL_SEND_FAILED) -- check this log, not your inbox" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "🔥 **Pipeline failed** - see the failure email for details" >> $GITHUB_STEP_SUMMARY
+              fi
+            else
+              echo "ℹ️ **Status: $EMAIL_TYPE**" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Pipeline State" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat data/pipeline_state.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Pipeline state not found**" >> $GITHUB_STEP_SUMMARY
+          fi

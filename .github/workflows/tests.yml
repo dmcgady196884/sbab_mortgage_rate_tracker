@@ -1,0 +1,35 @@
+name: Tests
+
+# Fast unit tests only: no network, no git, no PRs. The slow tests hit SBAB's live API
+# and open real PRs, so they are run by hand (see README, "Testing").
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fast-tests:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.13']  # 3.11 is what the private deployment runs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run fast tests
+        run: pytest tests/ -m "not slow and not very_slow"

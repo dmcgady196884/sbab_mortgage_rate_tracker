@@ -1,0 +1,60 @@
+# Environment and secrets
+.env
+*.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+sbab_venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (keep structure, ignore actual data files)
+data/raw/*.csv
+data/raw/*.txt
+# Bulky intermediate cell files from old adaptive scraper
+data/raw/adaptive/
+# Grid deep scraper output (JSON results)
+data/raw/grid_deep/
+data/*.json
+data/matrices/*.csv
+
+# Keep 3-file temporal validity model for git history tracking:
+# - surfaces.csv: Full snapshots with temporal validity
+# - discount_surfaces.csv: Normalized discount patterns
+# - list_rates.csv: Base list rates by maturity
+
+# Pricing surface PNGs are email-only; only discount_surface PNGs are git-tracked
+data/visualizations/pricing_surface_*.png
+
+# Claude Code local state
+.claude/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+SBAB_MONITOR_TODOS.md
